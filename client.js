@@ -83,6 +83,8 @@ window.__ModuleLoader__.load({
       'section.volume': '朗读音量',
       'section.source': '源语音',
       'section.maxChars': '单次字数上限',
+  'section.jaGap': '口癖前停顿',
+  'section.ms': '{value} 毫秒',
       'section.maxChars.hint': '超出部分不朗读，避免一次合成好几分钟的音频。',
       'section.idleMinutes': '空闲自动退出',
       'section.idleMinutes.hint': '这么久没朗读就关掉语音服务，把显存还给游戏和其他程序；下次点喇叭会自动重启（首次慢十几秒）。0 表示常驻。',
@@ -137,6 +139,8 @@ window.__ModuleLoader__.load({
       'section.volume': 'Volume',
       'section.source': 'Source voice',
       'section.maxChars': 'Characters per answer',
+  'section.jaGap': 'Pause before a Japanese tick',
+  'section.ms': '{value} ms',
       'section.maxChars.hint': 'The rest is skipped so one click cannot synthesize minutes of audio.',
       'section.idleMinutes': 'Leave when idle',
       'section.idleMinutes.hint': 'Stop the speech service after this long without playback so the GPU goes back to games and other apps; the next click restarts it (slower the first time). 0 keeps it resident.',
@@ -886,6 +890,20 @@ window.__ModuleLoader__.load({
                 },
               }),
               h('span', { key: 'value', className: 'dsvt-value' }, tr('section.chars', { value: s.maxChars })),
+            ]),
+            field('jaGapMs', tr('section.jaGap'), [
+              h('input', {
+                key: 'range',
+                type: 'range',
+                min: 0,
+                max: 200,
+                step: 5,
+                value: s.jaGapMs,
+                onChange: (event) => {
+                  commit('jaGapMs', Number(event.target.value))
+                },
+              }),
+              h('span', { key: 'value', className: 'dsvt-value' }, tr('section.ms', { value: s.jaGapMs })),
             ]),
             field('idleMinutes', tr('section.idleMinutes'), [
               h('input', {

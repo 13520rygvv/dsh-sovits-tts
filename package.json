@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-sovits-tts",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "description": "Reads a finished assistant answer aloud through the user's own so-vits-svc voice models",

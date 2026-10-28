@@ -71,6 +71,8 @@ const DEFAULTS = {
   voice: 'yuuka',
   /** Source TTS voice used for the speech that gets converted. Empty means the default. */
   sourceVoice: '',
+  /** Milliseconds of breathing room before a Japanese tick such as ですわ. */
+  jaGapMs: 30,
   /** Minutes of silence before the worker leaves and frees the GPU; 0 keeps it. */
   idleMinutes: 15,
   /** Percent chance that a text message on its way to QQ is sent as a voice instead; 0 = off. */
@@ -113,6 +115,7 @@ function sanitize(input) {
   out.rate = number(out.rate, -50, 100, DEFAULTS.rate)
   out.volume = number(out.volume, 0, 100, DEFAULTS.volume)
   out.maxChars = number(out.maxChars, 0, 5000, DEFAULTS.maxChars)
+  out.jaGapMs = number(out.jaGapMs, 0, 300, DEFAULTS.jaGapMs)
   out.idleMinutes = number(out.idleMinutes, 0, 240, DEFAULTS.idleMinutes)
   out.qqVoiceChance = number(out.qqVoiceChance, 0, 100, DEFAULTS.qqVoiceChance)
   out.qqVoiceMaxChars = number(out.qqVoiceMaxChars, 20, 1200, DEFAULTS.qqVoiceMaxChars)
@@ -516,6 +519,7 @@ async function voiceWav(cfg, text) {
       pitch: cfg.pitch,
       rate: cfg.rate,
       sourceVoice: cfg.sourceVoice === '' ? undefined : cfg.sourceVoice,
+      jaGapMs: cfg.jaGapMs,
       maxChars: cfg.qqVoiceMaxChars,
     },
     timeout: 600_000,
@@ -761,6 +765,7 @@ async function answer(ctx, state, request) {
         pitch: numberOr(body.pitch, cfg.pitch),
         rate: numberOr(body.rate, cfg.rate),
         sourceVoice: pick(body.sourceVoice, cfg.sourceVoice) || undefined,
+        jaGapMs: numberOr(body.jaGapMs, cfg.jaGapMs),
         maxChars: cfg.maxChars,
       },
       timeout: 600_000,

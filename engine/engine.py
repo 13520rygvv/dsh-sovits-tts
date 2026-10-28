@@ -253,6 +253,9 @@ JA_TICK_RE = re.compile(
     "|".join(re.escape(kana) for kana in sorted((row[1] for row in JA_TICKS), key=len, reverse=True))
 )
 JA_TICK_SAPI = {kana: latin for _, kana, latin in JA_TICKS}
+# Silence inserted before a Japanese tick fragment. Trimmed fragments end right
+# at the speech edge, so a small explicit gap is what makes "sentence ... tick"
+# read as one sentence instead of two glued takes; it is also a user setting.
 JA_SEGMENT_GAP = 0.03
 
 
@@ -491,7 +494,7 @@ def _finish_mono(data: np.ndarray, sr: int) -> np.ndarray:
     return mono
 
 
-def _trim_edges(audio: np.ndarray, sr: int = 16000, thresh_ratio: float = 0.02, keep_ms: int = 20) -> np.ndarray:
+def _trim_edges(audio: np.ndarray, sr: int = 16000, thresh_ratio: float = 0.02, keep_ms: int = 6) -> np.ndarray:
     """Strip leading/trailing near-silence from one spliced fragment.
 
     Each edge-tts fragment arrives padded with its own leading/trailing silence;
@@ -766,12 +769,14 @@ class Engine:
         source_voice: str | None = None,
         max_chars: int = 3000,
         rate: int | None = None,
+        ja_gap_ms: int | None = None,
     ) -> tuple[np.ndarray, int]:
         started = time.time()
         plain = normalize_ja_ticks(clean_markdown(text))
         if len(plain) > max_chars:
             plain = plain[:max_chars]
         speed = int(rate or 0)
+        gap_sec = JA_SEGMENT_GAP if ja_gap_ms is None else max(0.0, min(0.3, int(ja_gap_ms) / 1000.0))
         chunks = split_text(plain, chunk_chars_for(speed))
         if not chunks:
             raise ValueError("nothing to speak after cleaning the text")
@@ -779,7 +784,7 @@ class Engine:
         src_voice = source_voice or DEFAULT_SOURCE_VOICE
         sample_rate = int(self._voice_model(voice).hps.data.sampling_rate)
 
-        key = self._cache_key(plain, voice, pitch, speed, src_voice)
+        key = self._cache_key(plain, voice, pitch, speed, src_voice, gap_sec)
         cached = self._result_cache.get(key)
         if cached is not None:
             self._result_cache.move_to_end(key)
@@ -792,7 +797,7 @@ class Engine:
         out: list[np.ndarray] = []
         pool = ThreadPoolExecutor(max_workers=min(4, len(chunks)), thread_name_prefix="tts-src")
         try:
-            futures = [pool.submit(self._source_wav, chunk, src_voice, speed) for chunk in chunks]
+            futures = [pool.submit(self._source_wav, chunk, src_voice, speed, gap_sec) for chunk in chunks]
             with self.lock:
                 for i, future in enumerate(futures):
                     waited = time.time()
@@ -825,8 +830,8 @@ class Engine:
             self._result_cache.popitem(last=False)
         return audio, sample_rate
 
-    def _cache_key(self, plain: str, voice: str, pitch, speed: int, src_voice: str) -> str:
-        raw = f"{plain}\x00{voice}\x00{pitch}\x00{speed}\x00{src_voice}\x00{self.fp16}"
+    def _cache_key(self, plain: str, voice: str, pitch, speed: int, src_voice: str, gap_sec: float = JA_SEGMENT_GAP) -> str:
+        raw = f"{plain}\x00{voice}\x00{pitch}\x00{speed}\x00{src_voice}\x00{gap_sec:.3f}\x00{self.fp16}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     def _edge_attempt(self, text: str, src_voice: str, rate: int) -> bytes:
@@ -857,13 +862,13 @@ class Engine:
                 pool.shutdown(wait=False, cancel_futures=True)
         raise RuntimeError("edge-tts failed: " + " | ".join(errors[-2:] or ["unknown"]))
 
-    def _source_wav(self, text: str, src_voice: str, rate: int = 0) -> np.ndarray:
+    def _source_wav(self, text: str, src_voice: str, rate: int = 0, gap_sec: float | None = None) -> np.ndarray:
         """Mixed-language source audio: Japanese tick fragments are spoken by a
         Japanese voice, everything else keeps the user's chosen source voice."""
         parts = split_ja_segments(text)
         if len(parts) == 1 and parts[0][0] == "zh":
             return self._source_audio(text, src_voice, rate)
-        gap = np.zeros(int(16000 * JA_SEGMENT_GAP), dtype=np.float32)
+        gap = np.zeros(int(16000 * (JA_SEGMENT_GAP if gap_sec is None else gap_sec)), dtype=np.float32)
         pool = ThreadPoolExecutor(max_workers=min(4, len(parts)), thread_name_prefix="tts-mix")
         try:
             futures = [

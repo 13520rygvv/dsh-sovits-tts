@@ -162,6 +162,7 @@ class Handler(BaseHTTPRequestHandler):
         pitch = body.get("pitch")
         rate = body.get("rate")
         max_chars = body.get("maxChars")
+        ja_gap = body.get("jaGapMs")
         try:
             started = time.time()
             with SPEAK_LOCK:
@@ -171,13 +172,23 @@ class Handler(BaseHTTPRequestHandler):
                     pitch=int(pitch) if pitch is not None else None,
                     source_voice=body.get("sourceVoice"),
                     rate=int(rate) if rate is not None else None,
+                    ja_gap_ms=int(ja_gap) if isinstance(ja_gap, (int, float)) else None,
                     **(
                         {"max_chars": int(max_chars)}
                         if isinstance(max_chars, (int, float)) and max_chars > 0
                         else {}
                     ),
                 )
-            log("speak voice=%s chars=%d rate=%s pitch=%s audio=%.2fs took=%.2fs", voice, len(text), rate, pitch, len(audio) / sr, time.time() - started)
+            log(
+                "speak voice=%s chars=%d rate=%s pitch=%s gap=%sms audio=%.2fs took=%.2fs",
+                voice,
+                len(text),
+                rate,
+                pitch,
+                ja_gap,
+                len(audio) / sr,
+                time.time() - started,
+            )
             return self._wav(audio, sr)
         except Exception as exc:  # noqa: BLE001 - keep the worker alive
             LOG.error("speak failed: %s\n%s", exc, traceback.format_exc())
