@@ -491,6 +491,26 @@ def _finish_mono(data: np.ndarray, sr: int) -> np.ndarray:
     return mono
 
 
+def _trim_edges(audio: np.ndarray, sr: int = 16000, thresh_ratio: float = 0.02, keep_ms: int = 20) -> np.ndarray:
+    """Strip leading/trailing near-silence from one spliced fragment.
+
+    Each edge-tts fragment arrives padded with its own leading/trailing silence;
+    glued together those pads read as a long pause *inside* one sentence, which
+    is exactly what "sentence then tick" must not sound like."""
+    if audio.size == 0:
+        return audio
+    peak = float(np.max(np.abs(audio)))
+    if peak <= 0.0:
+        return audio
+    loud = np.flatnonzero(np.abs(audio) >= peak * thresh_ratio)
+    if loud.size == 0:
+        return audio
+    keep = int(sr * keep_ms / 1000)
+    start = max(0, int(loud[0]) - keep)
+    end = min(audio.size, int(loud[-1]) + 1 + keep)
+    return audio[start:end]
+
+
 def _rmtree_retry(path: Path, attempts: int = 6) -> None:
     """Windows keeps a directory locked while a racing writer still holds it."""
     for attempt in range(attempts):
@@ -858,7 +878,7 @@ class Engine:
             ]
             pieces: list[np.ndarray] = []
             for future in futures:
-                pieces.append(future.result().astype(np.float32))
+                pieces.append(_trim_edges(future.result().astype(np.float32)))
                 pieces.append(gap)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
