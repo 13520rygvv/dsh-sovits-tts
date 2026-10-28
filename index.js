@@ -68,6 +68,8 @@ const DEFAULTS = {
   voice: 'yuuka',
   /** Source TTS voice used for the speech that gets converted. Empty means the default. */
   sourceVoice: '',
+  /** Minutes of silence before the worker leaves and frees the GPU; 0 keeps it. */
+  idleMinutes: 15,
 }
 
 /** How long a cold start may take before the request fails loudly. */
@@ -100,6 +102,7 @@ function sanitize(input) {
   out.rate = number(out.rate, -50, 100, DEFAULTS.rate)
   out.volume = number(out.volume, 0, 100, DEFAULTS.volume)
   out.maxChars = number(out.maxChars, 0, 5000, DEFAULTS.maxChars)
+  out.idleMinutes = number(out.idleMinutes, 0, 240, DEFAULTS.idleMinutes)
   out.port = number(out.port, 1024, 65535, DEFAULTS.port)
   out.workerDir = String(out.workerDir ?? DEFAULTS.workerDir).trim() || DEFAULTS.workerDir
   out.pythonPath = String(out.pythonPath ?? '').trim()
@@ -267,6 +270,7 @@ function boot(cfg) {
         detached: true,
         windowsHide: true,
         stdio: ['ignore', logFd, logFd],
+        env: { ...process.env, SOVITS_IDLE_SECONDS: String(Math.round(cfg.idleMinutes * 60)) },
       })
     } finally {
       closeSync(logFd)

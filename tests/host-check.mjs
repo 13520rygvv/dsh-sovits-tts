@@ -2,8 +2,33 @@
 // context (fake sessionQuery + fake connection) and drives it with real
 // Requests, so the text extraction, worker boot and binary Response are all
 // exercised without the app. Run: node test/host-check.mjs
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { apply } from '../index.js'
+
+/**
+ * The settings round-trip below patches the real settings file, so snapshot it
+ * first and put the exact bytes back on the way out (an earlier version reset
+ * unrelated fields to their defaults and lost the user's voice/pitch).
+ */
+const SETTINGS_PATH = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'sovits-tts', 'settings.json')
+let settingsBackup = null
+try {
+  settingsBackup = readFileSync(SETTINGS_PATH, 'utf8')
+} catch {
+  settingsBackup = null
+}
+
+function restoreSettingsFile() {
+  if (settingsBackup === null) return
+  try {
+    writeFileSync(SETTINGS_PATH, settingsBackup, 'utf8')
+    console.log('settings file restored')
+  } catch (error) {
+    console.log('settings file restore failed:', error.message)
+  }
+}
 
 const routes = []
 const events = [
@@ -78,6 +103,8 @@ if (patched.settings?.maxChars !== 10) throw new Error('settings patch did not t
 const clamped = await call({ action: 'speak', sessionId: 's1', messageId: 'm1' })
 console.log('budget applied:', clamped.status, 'chars=', clamped.headers.get('x-sovits-chars'), 'truncated=', clamped.headers.get('x-sovits-truncated'))
 if (clamped.headers.get('x-sovits-truncated') !== '1') throw new Error('maxChars patch did not cut the answer')
-const restored = await (await call({ action: 'settings-set', patch: { voice: 'yuuka', rate: 0, pitch: 0, maxChars: 1200 } })).json()
+const restored = await (await call({ action: 'settings-set', patch: health.settings })).json()
 console.log('settings restored:', JSON.stringify({ persisted: restored.persisted, settings: restored.settings }))
+restoreSettingsFile()
+if (JSON.stringify(restored.settings) !== JSON.stringify(health.settings)) throw new Error('settings were not restored to their original values')
 

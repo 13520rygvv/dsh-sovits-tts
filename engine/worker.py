@@ -24,7 +24,12 @@ from urllib.parse import parse_qs, urlparse
 import engine
 
 LOG = logging.getLogger("sovits.worker")
-STATE = {"engine": None, "ready": False, "warm": None, "error": None}
+STATE = {"engine": None, "ready": False, "warm": None, "error": None, "last_activity": time.time()}
+# The Host half spawns us on demand and never stops us. One 667 MB checkpoint per
+# voice plus ~2.6 GiB of VRAM is too much to keep resident on a 6 GiB card while
+# the desktop does something else, so leave after a while and let auto-start
+# bring us back. 0 disables the watchdog.
+IDLE_SECONDS = int(os.environ.get("SOVITS_IDLE_SECONDS") or 900)
 # One synthesis at a time: the engine keeps a small checkpoint cache and the GPU
 # is shared, so concurrent requests would thrash memory and the LRU slot.
 SPEAK_LOCK = threading.Lock()
@@ -33,6 +38,30 @@ SPEAK_LOCK = threading.Lock()
 def log(msg, *args):
     LOG.info(msg, *args)
     sys.stdout.flush()
+
+
+def touch() -> None:
+    """Remember that somebody still wants the models warm."""
+    STATE["last_activity"] = time.time()
+
+
+def idle_watchdog() -> None:
+    """Leave when nobody asked for audio for a while, then release the VRAM."""
+    if IDLE_SECONDS <= 0:
+        return
+    while True:
+        time.sleep(30)
+        if not STATE["ready"] or SPEAK_LOCK.locked():
+            touch()
+            continue
+        idle = time.time() - STATE["last_activity"]
+        if idle >= IDLE_SECONDS:
+            log("idle for %.0fs (>%ds), shutting down to free the GPU", idle, IDLE_SECONDS)
+            try:
+                STATE["engine"] = None
+                sys.stdout.flush()
+            finally:
+                os._exit(0)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -126,6 +155,7 @@ class Handler(BaseHTTPRequestHandler):
         body = body or {}
         if not (text or "").strip():
             return self._json(400, {"ok": False, "error": "empty text"})
+        touch()
         eng = STATE["engine"]
         if eng is None:
             return self._json(503, {"ok": False, "error": STATE["error"] or "engine not ready"})
@@ -154,6 +184,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
 
     def _warm(self, voice):
+        touch()
         eng = STATE["engine"]
         if eng is None:
             return self._json(503, {"ok": False, "error": STATE["error"] or "engine not ready"})
@@ -212,6 +243,7 @@ def main():
     server.daemon_threads = True
     print(f"LISTENING http://{args.host}:{args.port}", flush=True)
     threading.Thread(target=boot, args=(args.warm,), daemon=True).start()
+    threading.Thread(target=idle_watchdog, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

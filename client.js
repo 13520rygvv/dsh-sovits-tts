@@ -84,6 +84,9 @@ window.__ModuleLoader__.load({
       'section.source': '源语音',
       'section.maxChars': '单次字数上限',
       'section.maxChars.hint': '超出部分不朗读，避免一次合成好几分钟的音频。',
+      'section.idleMinutes': '空闲自动退出',
+      'section.idleMinutes.hint': '这么久没朗读就关掉语音服务，把显存还给游戏和其他程序；下次点喇叭会自动重启（首次慢十几秒）。0 表示常驻。',
+      'section.minutes': '{value} 分钟',
       'section.autoStart': '需要时自动启动语音服务',
       'section.advanced': '高级',
       'section.workerDir': '服务目录',
@@ -127,6 +130,9 @@ window.__ModuleLoader__.load({
       'section.source': 'Source voice',
       'section.maxChars': 'Characters per answer',
       'section.maxChars.hint': 'The rest is skipped so one click cannot synthesize minutes of audio.',
+      'section.idleMinutes': 'Leave when idle',
+      'section.idleMinutes.hint': 'Stop the speech service after this long without playback so the GPU goes back to games and other apps; the next click restarts it (slower the first time). 0 keeps it resident.',
+      'section.minutes': '{value} min',
       'section.autoStart': 'Start the speech service when needed',
       'section.advanced': 'Advanced',
       'section.workerDir': 'Service directory',
@@ -843,6 +849,20 @@ window.__ModuleLoader__.load({
               }),
               h('span', { key: 'value', className: 'dsvt-value' }, tr('section.chars', { value: s.maxChars })),
             ]),
+            field('idleMinutes', tr('section.idleMinutes'), [
+              h('input', {
+                key: 'number',
+                type: 'number',
+                min: 0,
+                max: 240,
+                step: 5,
+                value: s.idleMinutes,
+                onChange: (event) => {
+                  commit('idleMinutes', Number(event.target.value))
+                },
+              }),
+              h('span', { key: 'value', className: 'dsvt-value' }, tr('section.minutes', { value: s.idleMinutes })),
+            ]),
             field('autoStart', '', h('label', { className: 'dsvt-check' }, [
               h('input', {
                 key: 'box',
@@ -856,6 +876,7 @@ window.__ModuleLoader__.load({
             ])),
           ]),
           h('p', { key: 'hint', className: 'dsvt-hint' }, tr('section.maxChars.hint')),
+          h('p', { key: 'hintIdle', className: 'dsvt-hint' }, tr('section.idleMinutes.hint')),
         ]),
         h('details', { key: 'advanced' }, [
           h('summary', { key: 'summary' }, tr('section.advanced')),
