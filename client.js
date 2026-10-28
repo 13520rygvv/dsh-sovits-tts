@@ -300,6 +300,22 @@ window.__ModuleLoader__.load({
       void pollHealth()
     }
 
+    /**
+     * Re-read the Host settings so a page never shows a value that was written
+     * somewhere else (settings.json by hand, another window, the CLI).
+     * @returns nothing.
+     */
+    async function refreshSettings() {
+      try {
+        const response = await post({ action: 'health', start: false })
+        const data = await response.json()
+        const settings = data.settings !== null && typeof data.settings === 'object' ? data.settings : null
+        if (settings !== null) setState({ settings })
+      } catch {
+        // keep the last known snapshot
+      }
+    }
+
     /** Forget an offline verdict and poll again from scratch. */
     function retryLoad() {
       if (polling.timer !== null) clearTimeout(polling.timer)
@@ -581,6 +597,7 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         ensureLoaded()
+        void refreshSettings()
       }, [])
 
       const voice = state.settings === null ? '' : String(state.settings.voice ?? '')
@@ -683,15 +700,17 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = React.useState(null)
       const [saved, setSaved] = React.useState({ tone: 'muted', text: '' })
       const timer = React.useRef(null)
+      const touched = React.useRef(false)
       const playing = usePlayback(PREVIEW_KEY)
 
       React.useEffect(() => {
         ensureLoaded()
+        void refreshSettings()
       }, [])
 
       React.useEffect(() => {
-        if (state.settings !== null && draft === null) setDraft(state.settings)
-      }, [state.settings, draft])
+        if (state.settings !== null && !touched.current) setDraft(state.settings)
+      }, [state.settings])
 
       React.useEffect(() => () => {
         if (timer.current !== null) clearTimeout(timer.current)
@@ -703,6 +722,7 @@ window.__ModuleLoader__.load({
        * @param value - new value.
        */
       const commit = (key, value) => {
+        touched.current = true
         setDraft((current) => ({ ...(current ?? {}), [key]: value }))
         setSaved({ tone: 'muted', text: tr('section.saving') })
         if (timer.current !== null) clearTimeout(timer.current)
