@@ -1,0 +1,69 @@
+dsh-sovits-tts — third-party notices
+====================================
+
+This repository is a derivative work: the inference code under `engine/vendor/`
+is copied (with deletions and small fixes) from the upstream project listed
+below. The remaining code (the DSH bundle in the repository root and the
+pipeline in `engine/engine.py`, `engine/worker.py`) is original work.
+
+No model weights are distributed with this repository
+(`G_*.pth`, `hubert-soft-*.pt`, `config.json` belong to whoever trained them).
+
+
+1. so-vits-svc (32k branch) — MIT
+---------------------------------
+Files copied from upstream into `engine/vendor/`:
+
+  engine/vendor/models.py
+  engine/vendor/modules.py
+  engine/vendor/attentions.py
+  engine/vendor/commons.py
+  engine/vendor/hubert/hubert_model.py
+  engine/vendor/vdecoder/hifigan/models.py
+  engine/vendor/vdecoder/hifigan/env.py
+
+Files rewritten or modified after the upstream original:
+
+  engine/vendor/utils.py                      reduced to f0_to_coarse /
+                                              load_checkpoint / get_hparams_from_file
+  engine/vendor/vdecoder/hifigan/utils.py     matplotlib import moved into the
+                                              plotting function; np.int -> np.int64
+
+Upstream project: SoftVC VITS Singing Voice Conversion
+  https://github.com/innnky/so-vits-svc  (32k branch)
+  Copyright (c) 2021 Jingyi Li — MIT License (full text in LICENSE).
+
+
+2. NSF HiFiGAN vocoder — upstream of (1)
+----------------------------------------
+`engine/vendor/vdecoder/hifigan/` is the NSF HiFiGAN decoder that so-vits-svc
+bundles. Its original upstream is:
+  https://github.com/openvpi/DiffSinger  (modules/nsf_hifigan)
+It reached this repository through (1), under (1)'s MIT license file.
+
+
+3. HuBERT-Soft content encoder — MIT, bshall/hubert
+---------------------------------------------------
+`engine/vendor/hubert/hubert_model.py` is the pure-PyTorch HuBERT-Soft model
+definition bundled by (1). The checkpoint `hubert-soft-0d54a1f4.pt` is NOT
+included; download it from:
+  https://github.com/bshall/hubert/releases/tag/v0.1
+  https://github.com/bshall/hubert
+
+
+4. Source speech
+----------------
+  * edge-tts (Microsoft Edge online TTS) — https://github.com/rany2/edge-tts
+  * Windows SAPI (System.Speech / SAPI.SpVoice) via comtypes, local only.
+
+
+5. Voice models and character voices
+------------------------------------
+The voices this plugin can re-voice into are so-vits-svc checkpoints trained by
+their owners. Their training data, character likeness and usage rights are NOT
+covered by this repository's license. Obtain permission from the rights holders
+before synthesizing with someone else's voice model in public.
+
+If you are an upstream author and believe a file here is used inappropriately,
+open an issue and the offending files will be removed or the repository made
+private.

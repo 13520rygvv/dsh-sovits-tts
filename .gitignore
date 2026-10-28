@@ -1,0 +1,27 @@
+# virtualenv / python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# model weights and voice checkpoints — never uploaded
+models/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+*.zip
+config.json
+
+# runtime output
+worker.host.log
+*.log
+*.wav
+*.mp3
+
+# python installer used during setup
+python-3.*-amd64.exe
+
+# node
+node_modules/

@@ -1,0 +1,8 @@
+# Python side of dsh-sovits-tts.
+# torch is NOT listed here: install it with the CUDA wheel index first, see README.
+numpy==1.23.5
+scipy==1.15.3
+soundfile==0.14.0
+praat-parselmouth==0.4.7
+edge-tts==7.3.1
+comtypes==1.4.17; sys_platform == "win32"

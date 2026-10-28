@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Answer voices",
+    "description": "Reads answers aloud through your own so-vits-svc checkpoints: a speaker button beside every answer, spoken in the character you pick."
+  }
+}
