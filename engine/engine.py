@@ -184,6 +184,32 @@ def split_text(text: str, max_chars: int = 90) -> list[str]:
     return [p for p in pieces if SPEAKABLE.search(p)]
 
 
+def normalize_ja_ticks(text: str) -> str:
+    """Rewrite Latin ticks ("desuwa", "desu no", "nanodesu", "desu") as Japanese."""
+    out = text
+    for pattern, kana, _sapi in JA_TICKS:
+        out = pattern.sub(kana, out)
+    return out
+
+
+def split_ja_segments(text: str) -> list[tuple[str, str]]:
+    """Split text into (lang, piece) runs: 'ja' for tick fragments, 'zh' for the rest."""
+    parts: list[tuple[str, str]] = []
+    pos = 0
+    for match in JA_TICK_RE.finditer(text):
+        head = text[pos:match.start()]
+        if head.strip():
+            parts.append(("zh", head))
+        parts.append(("ja", match.group(0)))
+        pos = match.end()
+    tail = text[pos:]
+    if tail.strip():
+        parts.append(("zh", tail))
+    if not parts:
+        return [("zh", text)]
+    return parts
+
+
 # Target source-audio length per chunk. Keeping one chunk near 20 s of neutral
 # speech leaves the hifigan intermediate tensors well inside 6 GB of VRAM even
 # when the voice is slowed down, while still being long enough that a whole
@@ -209,6 +235,25 @@ EDGE_VOICES = [
 ]
 SAPI_VOICE = "Microsoft Huihui Desktop"
 DEFAULT_SOURCE_VOICE = "zh-CN-XiaoxiaoNeural"
+# The persona closes its group-chat lines with Latin ticks such as "desuwa"; a
+# Chinese voice reads that literally as "de su wa", which sounds wrong. Speak the
+# Japanese spelling instead, and hand each such fragment to a Japanese voice.
+JA_SOURCE_VOICE = "ja-JP-NanamiNeural"
+# (Latin pattern, Japanese spelling, what the offline SAPI voice should say).
+# Longest Latin form first, so "nanodesu" never gets eaten by the bare "desu".
+JA_TICKS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"(?i)\bnanodesu\b"), "なのです", "nanodesu"),
+    (re.compile(r"(?i)\barimasu\s*-?\s*wa\b"), "ありますわ", "arimasuwa"),
+    (re.compile(r"(?i)\bdesu\s*-?\s*wa\b"), "ですわ", "desuwa"),
+    (re.compile(r"(?i)\bdesu\s*-?\s*no\b"), "ですの", "desuno"),
+    (re.compile(r"(?i)\bdesu\b"), "です", "desu"),
+)
+# Every Japanese spelling we may emit, longest first, so "ですわ" wins over "です".
+JA_TICK_RE = re.compile(
+    "|".join(re.escape(kana) for kana in sorted((row[1] for row in JA_TICKS), key=len, reverse=True))
+)
+JA_TICK_SAPI = {kana: latin for _, kana, latin in JA_TICKS}
+JA_SEGMENT_GAP = 0.03
 
 
 def _ffmpeg() -> str | None:
@@ -703,7 +748,7 @@ class Engine:
         rate: int | None = None,
     ) -> tuple[np.ndarray, int]:
         started = time.time()
-        plain = clean_markdown(text)
+        plain = normalize_ja_ticks(clean_markdown(text))
         if len(plain) > max_chars:
             plain = plain[:max_chars]
         speed = int(rate or 0)
@@ -793,9 +838,46 @@ class Engine:
         raise RuntimeError("edge-tts failed: " + " | ".join(errors[-2:] or ["unknown"]))
 
     def _source_wav(self, text: str, src_voice: str, rate: int = 0) -> np.ndarray:
+        """Mixed-language source audio: Japanese tick fragments are spoken by a
+        Japanese voice, everything else keeps the user's chosen source voice."""
+        parts = split_ja_segments(text)
+        if len(parts) == 1 and parts[0][0] == "zh":
+            return self._source_audio(text, src_voice, rate)
+        gap = np.zeros(int(16000 * JA_SEGMENT_GAP), dtype=np.float32)
+        pool = ThreadPoolExecutor(max_workers=min(4, len(parts)), thread_name_prefix="tts-mix")
+        try:
+            futures = [
+                pool.submit(
+                    self._source_audio,
+                    piece,
+                    JA_SOURCE_VOICE if lang == "ja" else src_voice,
+                    rate,
+                    JA_TICK_SAPI.get(piece) if lang == "ja" else None,
+                )
+                for lang, piece in parts
+            ]
+            pieces: list[np.ndarray] = []
+            for future in futures:
+                pieces.append(future.result().astype(np.float32))
+                pieces.append(gap)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        LOG.info(
+            "mixed source: %d part(s), ja ticks %s, ja voice %s",
+            len(parts),
+            ",".join(piece for lang, piece in parts if lang == "ja") or "-",
+            JA_SOURCE_VOICE,
+        )
+        return np.concatenate(pieces[:-1]) if pieces else np.zeros(1, dtype=np.float32)
+
+    def _source_audio(self, text: str, src_voice: str, rate: int = 0, sapi_text: str | None = None) -> np.ndarray:
         """Neutral source audio. The online voice is decoded straight from memory;
         only the offline SAPI fallback needs a temp file (SAPI can only write to
-        disk), and that one is removed right away with retries."""
+        disk), and that one is removed right away with retries.
+
+        `sapi_text` is what the offline voice should read instead: the local
+        Chinese voice cannot pronounce kana at all (it writes an empty file), so
+        a Japanese fragment falls back to its Latin spelling."""
         try:
             return decode_mono16k_bytes(self._edge_hedged(text, src_voice, rate))
         except Exception as exc:  # service down / network blocked
@@ -803,7 +885,7 @@ class Engine:
         tmpdir = Path(tempfile.mkdtemp(prefix="sovits-sapi-"))
         try:
             wav = tmpdir / "sapi.wav"
-            sapi_to_wav(text, str(wav), rate)
+            sapi_to_wav(sapi_text or text, str(wav), rate)
             return decode_mono16k(str(wav))
         finally:
             _rmtree_retry(tmpdir)
