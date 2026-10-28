@@ -86,6 +86,14 @@ window.__ModuleLoader__.load({
       'section.maxChars.hint': '超出部分不朗读，避免一次合成好几分钟的音频。',
       'section.idleMinutes': '空闲自动退出',
       'section.idleMinutes.hint': '这么久没朗读就关掉语音服务，把显存还给游戏和其他程序；下次点喇叭会自动重启（首次慢十几秒）。0 表示常驻。',
+      'section.qq': '发到 QQ 时改成语音',
+      'section.qqChance': '转成语音的概率',
+      'section.qqChars': '一条最多念多少字',
+      'section.qqUpstream': 'NapCat 地址',
+      'section.qqPort': '中转端口',
+      'section.qq.hint': '把 QQ 桥插件里的「NapCat」地址改成 http://127.0.0.1:{port}，本插件就在中间把要发出去的文字换成语音条（图片照发）；概率 0 = 只发文字。',
+      'section.qq.on': '中转已在监听：127.0.0.1:{port}',
+      'section.qq.off': '中转没起来（端口被占用？看 qq-voice.log）',
       'section.minutes': '{value} 分钟',
       'section.autoStart': '需要时自动启动语音服务',
       'section.advanced': '高级',
@@ -132,6 +140,14 @@ window.__ModuleLoader__.load({
       'section.maxChars.hint': 'The rest is skipped so one click cannot synthesize minutes of audio.',
       'section.idleMinutes': 'Leave when idle',
       'section.idleMinutes.hint': 'Stop the speech service after this long without playback so the GPU goes back to games and other apps; the next click restarts it (slower the first time). 0 keeps it resident.',
+      'section.qq': 'Speak on QQ',
+      'section.qqChance': 'Chance of a voice',
+      'section.qqChars': 'Most characters per voice',
+      'section.qqUpstream': 'NapCat address',
+      'section.qqPort': 'Pass-through port',
+      'section.qq.hint': 'Point the QQ bridge’s NapCat address at http://127.0.0.1:{port}; this bundle then swaps outgoing text for a voice note (images still go). Chance 0 means plain text only.',
+      'section.qq.on': 'Pass-through listening on 127.0.0.1:{port}',
+      'section.qq.off': 'Pass-through is not listening (port taken? see qq-voice.log)',
       'section.minutes': '{value} min',
       'section.autoStart': 'Start the speech service when needed',
       'section.advanced': 'Advanced',
@@ -191,6 +207,7 @@ window.__ModuleLoader__.load({
         device: '',
         error: '',
         ready: false,
+        qq: null,
       },
       listeners: new Set(),
       started: false,
@@ -246,6 +263,7 @@ window.__ModuleLoader__.load({
         device: typeof data.device === 'string' ? data.device : '',
         error: typeof data.error === 'string' ? data.error : '',
         ready: data.ready === true,
+        qq: data.qq !== null && typeof data.qq === 'object' ? data.qq : store.state.qq,
         phase: voices.length > 0 ? 'ready' : data.pending === true ? 'warming' : 'idle',
       })
       return voices.length > 0
@@ -877,6 +895,63 @@ window.__ModuleLoader__.load({
           ]),
           h('p', { key: 'hint', className: 'dsvt-hint' }, tr('section.maxChars.hint')),
           h('p', { key: 'hintIdle', className: 'dsvt-hint' }, tr('section.idleMinutes.hint')),
+        ]),
+        h('div', { key: 'qq', className: 'dsvt-card' }, [
+          h('div', { key: 'grid', className: 'dsvt-grid' }, [
+            field('qqVoiceChance', tr('section.qqChance'), [
+              h('input', {
+                key: 'range',
+                type: 'range',
+                min: 0,
+                max: 100,
+                step: 5,
+                value: s.qqVoiceChance,
+                onChange: (event) => {
+                  commit('qqVoiceChance', Number(event.target.value))
+                },
+              }),
+              h('span', { key: 'value', className: 'dsvt-value' }, tr('section.percent', { value: s.qqVoiceChance })),
+            ]),
+            field('qqVoiceMaxChars', tr('section.qqChars'), [
+              h('input', {
+                key: 'number',
+                type: 'number',
+                min: 20,
+                max: 1200,
+                step: 20,
+                value: s.qqVoiceMaxChars,
+                onChange: (event) => {
+                  commit('qqVoiceMaxChars', Number(event.target.value))
+                },
+              }),
+              h('span', { key: 'value', className: 'dsvt-value' }, tr('section.chars', { value: s.qqVoiceMaxChars })),
+            ]),
+            field('qqVoiceUpstream', tr('section.qqUpstream'), h('input', {
+              key: 'text',
+              type: 'text',
+              value: s.qqVoiceUpstream,
+              onChange: (event) => {
+                commit('qqVoiceUpstream', event.target.value)
+              },
+            })),
+            field('qqVoicePort', tr('section.qqPort'), h('input', {
+              key: 'number',
+              type: 'number',
+              min: 1024,
+              max: 65535,
+              step: 1,
+              value: s.qqVoicePort,
+              onChange: (event) => {
+                commit('qqVoicePort', Number(event.target.value))
+              },
+            })),
+          ]),
+          h('p', { key: 'hint', className: 'dsvt-hint' }, tr('section.qq.hint', { port: s.qqVoicePort })),
+          h('p', { key: 'status', className: 'dsvt-hint' }, state.qq === null
+            ? ''
+            : state.qq.listening
+              ? tr('section.qq.on', { port: state.qq.port })
+              : tr('section.qq.off')),
         ]),
         h('details', { key: 'advanced' }, [
           h('summary', { key: 'summary' }, tr('section.advanced')),

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-sovits-tts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Reads a finished assistant answer aloud through the user's own so-vits-svc voice models",
@@ -18,7 +18,9 @@
     "icon.svg"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,

@@ -21,7 +21,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { request as httpRequest } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 
 /** Exact Fetch route the Client half posts to; the carrier authenticates it. */
 const ROUTE = '/api/dsh-sovits'
@@ -34,6 +34,9 @@ const SETTINGS_FILE = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'sov
 
 /** Where the client half reports failures it cannot show any other way. */
 const CLIENT_ERROR_FILE = join(dirname(SETTINGS_FILE), 'client-errors.log')
+
+/** Where the QQ pass-through records what it decided, and why. */
+const QQ_VOICE_LOG = join(dirname(SETTINGS_FILE), 'qq-voice.log')
 
 /** Hard dependency: the authenticated Fetch-route registry and its carrier. */
 export const inject = ['connection']
@@ -70,6 +73,14 @@ const DEFAULTS = {
   sourceVoice: '',
   /** Minutes of silence before the worker leaves and frees the GPU; 0 keeps it. */
   idleMinutes: 15,
+  /** Percent chance that a text message on its way to QQ is sent as a voice instead; 0 = off. */
+  qqVoiceChance: 0,
+  /** Text longer than this stays text: a voice that runs for minutes is not a chat message. */
+  qqVoiceMaxChars: 200,
+  /** Loopback port of the OneBot pass-through proxy that does the substitution. */
+  qqVoicePort: 3002,
+  /** The real OneBot (NapCat) address the proxy forwards to. */
+  qqVoiceUpstream: 'http://127.0.0.1:3000',
 }
 
 /** How long a cold start may take before the request fails loudly. */
@@ -103,6 +114,10 @@ function sanitize(input) {
   out.volume = number(out.volume, 0, 100, DEFAULTS.volume)
   out.maxChars = number(out.maxChars, 0, 5000, DEFAULTS.maxChars)
   out.idleMinutes = number(out.idleMinutes, 0, 240, DEFAULTS.idleMinutes)
+  out.qqVoiceChance = number(out.qqVoiceChance, 0, 100, DEFAULTS.qqVoiceChance)
+  out.qqVoiceMaxChars = number(out.qqVoiceMaxChars, 20, 1200, DEFAULTS.qqVoiceMaxChars)
+  out.qqVoicePort = number(out.qqVoicePort, 1024, 65535, DEFAULTS.qqVoicePort)
+  out.qqVoiceUpstream = String(out.qqVoiceUpstream ?? DEFAULTS.qqVoiceUpstream).trim() || DEFAULTS.qqVoiceUpstream
   out.port = number(out.port, 1024, 65535, DEFAULTS.port)
   out.workerDir = String(out.workerDir ?? DEFAULTS.workerDir).trim() || DEFAULTS.workerDir
   out.pythonPath = String(out.pythonPath ?? '').trim()
@@ -410,6 +425,247 @@ async function stopWorker(cfg) {
 }
 
 /**
+ * Log one line about the QQ voice pass-through.
+ *
+ * This bridge sits between another plugin and a chat backend, so when it decides
+ * to keep the text (too long, unlucky roll, synthesis failed) there is no UI to
+ * show it in: the log file is the only place the decision is visible.
+ * @param line - message to append.
+ */
+function logQqVoice(line) {
+  try {
+    mkdirSync(dirname(QQ_VOICE_LOG), { recursive: true })
+    appendFileSync(QQ_VOICE_LOG, `${new Date().toISOString()} ${line}\n`, 'utf8')
+  } catch {
+    // Diagnostics are best effort.
+  }
+}
+
+/**
+ * Buffer a whole request body.
+ * @param request - incoming request.
+ * @returns body bytes.
+ */
+function readBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    request.on('data', (chunk) => chunks.push(chunk))
+    request.on('end', () => resolve(Buffer.concat(chunks)))
+    request.on('error', reject)
+  })
+}
+
+/**
+ * Send one request to the real OneBot backend and buffer its answer.
+ * @param cfg - effective settings (upstream address).
+ * @param request - the original request, for method and headers.
+ * @param body - body bytes to send.
+ * @returns status, headers and body.
+ */
+function forwardOneBot(cfg, request, body) {
+  const path = request.url ?? '/'
+  return new Promise((resolve, reject) => {
+    let target
+    try {
+      target = new URL(path, cfg.qqVoiceUpstream)
+    } catch {
+      reject(new Error(`bad OneBot address: ${cfg.qqVoiceUpstream}`))
+      return
+    }
+    const headers = { ...request.headers }
+    delete headers.host
+    delete headers['content-length']
+    if (body.length > 0) headers['content-length'] = String(body.length)
+    const call = httpRequest({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port === '' ? 80 : target.port,
+      path: `${target.pathname}${target.search}`,
+      method: request.method,
+      headers,
+    }, (res) => {
+      const chunks = []
+      res.on('data', (chunk) => chunks.push(chunk))
+      res.on('end', () => resolve({
+        status: res.statusCode ?? 502,
+        headers: res.headers,
+        body: Buffer.concat(chunks),
+      }))
+      res.on('error', reject)
+    })
+    call.setTimeout(300_000, () => call.destroy(new Error('the OneBot backend did not answer in time')))
+    call.on('error', reject)
+    if (body.length > 0) call.write(body)
+    call.end()
+  })
+}
+
+/**
+ * Synthesize speech for a QQ message, serialized with everything else on the GPU.
+ * @param cfg - effective settings.
+ * @param text - what to say.
+ * @returns WAV bytes.
+ */
+async function voiceWav(cfg, text) {
+  await boot(cfg)
+  const run = () => requestWorker(cfg, '/speak', {
+    method: 'POST',
+    body: {
+      text,
+      voice: cfg.voice === '' ? undefined : cfg.voice,
+      pitch: cfg.pitch,
+      rate: cfg.rate,
+      sourceVoice: cfg.sourceVoice === '' ? undefined : cfg.sourceVoice,
+      maxChars: cfg.qqVoiceMaxChars,
+    },
+    timeout: 600_000,
+  })
+  const chained = queue.then(run, run)
+  queue = chained.then(() => undefined, () => undefined)
+  const answer = await chained
+  if (answer.status !== 200) {
+    let detail = `the speech worker answered HTTP ${String(answer.status)}`
+    try {
+      const parsed = JSON.parse(answer.body.toString('utf8'))
+      if (typeof parsed?.error === 'string') detail = parsed.error
+    } catch {
+      // Keep the status-based detail.
+    }
+    throw new Error(detail)
+  }
+  return answer.body
+}
+
+/**
+ * Decide whether one outgoing OneBot call should carry a voice instead of text.
+ *
+ * Replacing the text segments keeps image segments intact, so a message that was
+ * text + stickers still arrives as one voice plus the same stickers.
+ * @param cfg - effective settings.
+ * @param path - request path, e.g. `/send_group_msg`.
+ * @param body - request body bytes.
+ * @returns a replacement body object, or null to forward unchanged.
+ */
+async function maybeVoice(cfg, path, body) {
+  if (cfg.qqVoiceChance <= 0) return null
+  if (!/\/send_(private|group)_msg$/.test(path)) return null
+  let parsed
+  try {
+    parsed = JSON.parse(body.toString('utf8'))
+  } catch {
+    return null
+  }
+  const segments = Array.isArray(parsed?.message) ? parsed.message : null
+  if (segments === null) return null
+  const text = segments
+    .filter((segment) => segment !== null && typeof segment === 'object' && segment.type === 'text')
+    .map((segment) => String(segment.data?.text ?? ''))
+    .join('\n')
+    .trim()
+  if (text === '') return null
+  const chars = Array.from(text).length
+  if (chars > cfg.qqVoiceMaxChars) {
+    logQqVoice(`text: ${String(chars)} chars is over the ${String(cfg.qqVoiceMaxChars)} limit`)
+    return null
+  }
+  if (Math.random() * 100 >= cfg.qqVoiceChance) {
+    logQqVoice(`text: unlucky roll (chance ${String(cfg.qqVoiceChance)}%)`)
+    return null
+  }
+  let wav
+  try {
+    wav = await voiceWav(cfg, text)
+  } catch (error) {
+    logQqVoice(`text: synthesis failed, sending text instead: ${String(error?.message ?? error)}`)
+    return null
+  }
+  const kept = segments.filter((segment) => segment !== null && typeof segment === 'object' && segment.type !== 'text')
+  logQqVoice(`voice: ${String(chars)} chars -> ${String(wav.length)} bytes (${String(kept.length)} extra segments kept)`)
+  return {
+    ...parsed,
+    message: [
+      { type: 'record', data: { file: `base64://${wav.toString('base64')}` } },
+      ...kept,
+    ],
+  }
+}
+
+/**
+ * Build the pass-through server that rewrites outgoing QQ messages.
+ * @param state - mutable holder of the effective settings.
+ * @returns the listening server.
+ */
+function createQqProxy(state) {
+  const server = createServer(async (request, response) => {
+    try {
+      const body = await readBody(request)
+      const replaced = await maybeVoice(state.cfg, request.url ?? '/', body)
+      const payload = replaced === null ? body : Buffer.from(JSON.stringify(replaced), 'utf8')
+      const answer = await forwardOneBot(state.cfg, request, payload)
+      const headers = { ...answer.headers }
+      delete headers['transfer-encoding']
+      delete headers.connection
+      response.writeHead(answer.status, headers)
+      response.end(answer.body)
+    } catch (error) {
+      const message = String(error?.message ?? error)
+      logQqVoice(`proxy: ${message}`)
+      try {
+        response.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({ status: 'failed', retcode: -1, message }))
+      } catch {
+        // The socket may already be gone.
+      }
+    }
+  })
+  server.on('error', (error) => logQqVoice(`proxy: ${String(error?.message ?? error)}`))
+  server.listen(state.cfg.qqVoicePort, '127.0.0.1')
+  return server
+}
+
+/**
+ * Make the pass-through match the current settings (another port, or nothing).
+ *
+ * The proxy runs whenever the bundle is loaded, even with a chance of zero: the
+ * other plugin points its OneBot address at this port, so turning the rewriting
+ * off must not take the port away and break plain text sending.
+ * @param state - mutable holder of the effective settings and of the server.
+ */
+function syncQqProxy(state) {
+  const wanted = state.cfg.qqVoicePort
+  if (state.qq !== null && state.qq.port === wanted) return
+  if (state.qq !== null) {
+    try {
+      state.qq.server.close()
+    } catch {
+      // Already closed.
+    }
+    state.qq = null
+  }
+  try {
+    state.qq = { server: createQqProxy(state), port: wanted }
+    logQqVoice(`proxy listening on 127.0.0.1:${String(wanted)} -> ${state.cfg.qqVoiceUpstream}`)
+  } catch (error) {
+    state.qq = null
+    logQqVoice(`proxy cannot listen on ${String(wanted)}: ${String(error?.message ?? error)}`)
+  }
+}
+
+/**
+ * Describe the pass-through for the settings page.
+ * @param state - mutable holder of the effective settings and of the server.
+ * @returns status object.
+ */
+function qqStatus(state) {
+  return {
+    listening: state.qq !== null,
+    port: state.qq === null ? 0 : state.qq.port,
+    upstream: state.cfg.qqVoiceUpstream,
+    chance: state.cfg.qqVoiceChance,
+  }
+}
+
+/**
  * Answer one request on the Fetch route.
  * @param ctx - Host context.
  * @param state - mutable holder of the effective settings.
@@ -435,7 +691,7 @@ async function answer(ctx, state, request) {
 
   if (action === 'health') {
     const live = await health(state.cfg, body.start === true)
-    return Response.json({ ...live, settings: state.cfg })
+    return Response.json({ ...live, settings: state.cfg, qq: qqStatus(state) })
   }
 
   if (action === 'settings-set') {
@@ -453,7 +709,8 @@ async function answer(ctx, state, request) {
     if (moved) await stopWorker(previous)
     state.cfg = next
     const persisted = writeSettingsFile(next)
-    return Response.json({ ok: true, settings: next, persisted, moved })
+    syncQqProxy(state)
+    return Response.json({ ok: true, settings: next, persisted, moved, qq: qqStatus(state) })
   }
 
   if (action === 'restart') {
@@ -464,7 +721,7 @@ async function answer(ctx, state, request) {
       const message = error instanceof Error ? error.message : String(error)
       return Response.json({ ok: false, error: message }, { status: 503 })
     }
-    return Response.json({ ...(await health(state.cfg, false)), settings: state.cfg })
+    return Response.json({ ...(await health(state.cfg, false)), settings: state.cfg, qq: qqStatus(state) })
   }
 
   if (action === 'shutdown') {
@@ -544,7 +801,20 @@ async function answer(ctx, state, request) {
  * @param config - bundle config, if any.
  */
 export function apply(ctx, config) {
-  const state = { cfg: settings(config) }
+  const state = { cfg: settings(config), qq: null }
+  ctx.effect(() => {
+    syncQqProxy(state)
+    return () => {
+      if (state.qq !== null) {
+        try {
+          state.qq.server.close()
+        } catch {
+          // Already closed.
+        }
+        state.qq = null
+      }
+    }
+  }, 'dsh-sovits-tts: QQ voice pass-through')
   ctx.effect(() => ctx.connection.fetch.register({
     path: ROUTE,
     methods: ['POST'],
